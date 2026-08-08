@@ -289,3 +289,78 @@ button:disabled {
 .compass {
   display: inline-block;
 }
+
+/* ---- Radar ---- */
+
+.radar-screen {
+  justify-content: flex-start;
+  padding-top: 1rem;
+}
+
+.radar-screen h1 {
+  font-size: 1.4rem;
+}
+
+.radar {
+  width: min(100%, 22rem);
+  align-self: center;
+  display: block;
+}
+
+.radar-ring {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.radar-ring-label {
+  fill: var(--ink-soft);
+  font-family: 'Avenir Next', Avenir, 'Segoe UI', 'Helvetica Neue', Arial,
+    sans-serif;
+  font-size: 9px;
+}
+
+.radar-north {
+  fill: var(--ink-soft);
+  font-family: 'Avenir Next', Avenir, 'Segoe UI', 'Helvetica Neue', Arial,
+    sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.radar-you {
+  fill: var(--ink);
+}
+
+.radar-dot {
+  fill: var(--accent);
+  cursor: pointer;
+  transition: r 120ms ease;
+}
+
+.radar-dot:hover {
+  opacity: 0.85;
+}
+
+.radar-dot.selected {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+
+.radar-detail {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.radar-detail h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+}

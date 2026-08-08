@@ -1,6 +1,8 @@
 import { dedupeByTitle, rankFacts } from './facts/engine';
+import { journalAdd, journalEntries } from './facts/journal';
 import { Session, UNLOCK_DISTANCE_M } from './facts/session';
-import { formatDistance } from './geo';
+import { bearingDeg, compassName, distanceM, formatDistance } from './geo';
+import { radarLayout } from './radar/layout';
 import { etymologyCandidates } from './sources/etymology';
 import { geocodePlace } from './sources/geocode';
 import { overpassCandidates } from './sources/overpass';
@@ -18,6 +20,7 @@ let userCoords: Coords | null = null;
 let placeLabel = '';
 let queue: Fact[] = [];
 let watchId: number | null = null;
+let lastShownFact: Fact | null = null;
 
 // ---------- rendering helpers ----------
 
@@ -97,7 +100,7 @@ function renderStatus(message: string): void {
   screen(box);
 }
 
-function renderFact(fact: Fact): void {
+function renderFact(fact: Fact, revisit = false): void {
   const box = el('div', 'screen');
 
   if (placeLabel) box.append(el('p', 'locality', placeLabel));
@@ -140,23 +143,183 @@ function renderFact(fact: Fact): void {
   box.append(card);
 
   const actions = el('div', 'actions');
-  const next = el('button', undefined, 'Next fact');
-  next.addEventListener('click', () => showNext());
-  actions.append(next);
+  if (revisit) {
+    const back = el('button', undefined, 'Back to radar');
+    back.addEventListener('click', () => renderRadar());
+    actions.append(back);
+  } else {
+    const next = el('button', undefined, 'Next fact');
+    next.addEventListener('click', () => showNext());
+    actions.append(next);
+    if (journalEntries().length > 1) {
+      const radar = el('button', 'ghost', 'Radar');
+      radar.addEventListener('click', () => renderRadar());
+      actions.append(radar);
+    }
+  }
   box.append(actions);
 
-  const left = session.factsLeft;
-  box.append(
-    el(
-      'p',
-      'hint',
-      left > 0
-        ? `${left} more fact${left === 1 ? '' : 's'} here — then it’s time to look around.`
-        : 'Last one for this spot.',
-    ),
-  );
+  if (!revisit) {
+    const left = session.factsLeft;
+    box.append(
+      el(
+        'p',
+        'hint',
+        left > 0
+          ? `${left} more fact${left === 1 ? '' : 's'} here — then it’s time to look around.`
+          : 'Last one for this spot.',
+      ),
+    );
+  }
 
   screen(box);
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string>,
+): SVGElementTagNameMap[K] {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+/**
+ * The radar: everything you've seen, plotted around you by true direction
+ * and distance, north up, zoomed so the farthest item still fits.
+ */
+function renderRadar(selectedId?: string): void {
+  const center = userCoords;
+  const entries = journalEntries();
+  const box = el('div', 'screen radar-screen');
+  box.append(el('h1', undefined, 'Seen around you'));
+
+  if (!center) {
+    box.append(el('p', 'lede', 'The radar needs a position first.'));
+    screen(box);
+    return;
+  }
+
+  const anchored = entries.filter((e) => e.fact.coords);
+  const RADIUS = 160;
+  const { points, rings } = radarLayout(
+    anchored.map((e) => ({ item: e.fact, coords: e.fact.coords! })),
+    center,
+    RADIUS,
+  );
+
+  if (points.length === 0) {
+    box.append(el('p', 'lede', 'Nothing with a location in your journal yet.'));
+  } else {
+    const svg = svgEl('svg', {
+      viewBox: `${-RADIUS} ${-RADIUS} ${RADIUS * 2} ${RADIUS * 2}`,
+      class: 'radar',
+      role: 'img',
+      'aria-label': 'Radar of seen facts around you',
+    });
+
+    for (const ring of rings) {
+      svg.append(
+        svgEl('circle', {
+          cx: '0',
+          cy: '0',
+          r: String(ring.radiusPx),
+          class: 'radar-ring',
+        }),
+      );
+      const label = svgEl('text', {
+        x: '4',
+        y: String(-ring.radiusPx + 11),
+        class: 'radar-ring-label',
+      });
+      label.textContent = ring.label;
+      svg.append(label);
+    }
+
+    const north = svgEl('text', {
+      x: '0',
+      y: String(-RADIUS + 10),
+      class: 'radar-north',
+      'text-anchor': 'middle',
+    });
+    north.textContent = 'N';
+    svg.append(north);
+
+    // You, in the middle.
+    svg.append(svgEl('circle', { cx: '0', cy: '0', r: '4', class: 'radar-you' }));
+
+    for (const p of points) {
+      const fact = p.item as Fact;
+      const isSelected = fact.id === selectedId;
+      const dot = svgEl('circle', {
+        cx: p.x.toFixed(1),
+        cy: p.y.toFixed(1),
+        r: isSelected ? '9' : '6',
+        class: isSelected ? 'radar-dot selected' : 'radar-dot',
+        role: 'button',
+        tabindex: '0',
+        'aria-label': fact.title,
+      });
+      const open = () => renderRadar(fact.id);
+      dot.addEventListener('click', open);
+      dot.addEventListener('keydown', (ev) => {
+        if ((ev as KeyboardEvent).key === 'Enter') open();
+      });
+      svg.append(dot);
+    }
+    box.append(svg);
+
+    const selected = anchored.find((e) => e.fact.id === selectedId)?.fact;
+    if (selected) {
+      const detail = el('div', 'radar-detail');
+      detail.append(el('h2', undefined, selected.title));
+      const d = distanceM(center, selected.coords!);
+      const dir = compassName(bearingDeg(center, selected.coords!));
+      detail.append(
+        el(
+          'p',
+          'anchor-line',
+          d < 30 ? '→ right here' : `→ ${formatDistance(d)} ${dir} of you`,
+        ),
+      );
+      const read = el('button', 'ghost', 'Read again');
+      read.addEventListener('click', () =>
+        renderFact({ ...selected, distanceM: d, direction: dir }, true),
+      );
+      detail.append(read);
+      box.append(detail);
+    } else {
+      box.append(el('p', 'hint', 'Tap a dot to see what it was.'));
+    }
+
+    const unanchored = entries.length - anchored.length;
+    if (unanchored > 0) {
+      box.append(
+        el(
+          'p',
+          'hint',
+          `${unanchored} fact${unanchored === 1 ? '' : 's'} without a place (weather, sunset) aren’t shown.`,
+        ),
+      );
+    }
+  }
+
+  const actions = el('div', 'actions');
+  const back = el('button', undefined, 'Back to facts');
+  back.addEventListener('click', () => resumeSession());
+  actions.append(back);
+  box.append(actions);
+  screen(box);
+}
+
+/** Return from the radar to wherever the session actually stands. */
+function resumeSession(): void {
+  if (lastShownFact && !session.capReached) renderFact(lastShownFact);
+  else if (session.capReached) renderOutOfFacts('cap');
+  else if (userCoords) startSession(userCoords);
+  else renderStart();
 }
 
 function renderOutOfFacts(reason: 'cap' | 'empty'): void {
@@ -178,6 +341,12 @@ function renderOutOfFacts(reason: 'cap' | 'empty'): void {
     ),
   );
 
+  const actions = el('div', 'actions');
+  if (journalEntries().length > 0) {
+    const radar = el('button', undefined, 'Radar');
+    radar.addEventListener('click', () => renderRadar());
+    actions.append(radar);
+  }
   const retry = el('button', 'ghost', 'Check again');
   retry.addEventListener('click', () => {
     if (userCoords) startSession(userCoords);
@@ -187,7 +356,6 @@ function renderOutOfFacts(reason: 'cap' | 'empty'): void {
     placeLabel = '';
     renderStart();
   });
-  const actions = el('div', 'actions');
   actions.append(retry, elsewhere);
   box.append(actions);
   screen(box);
@@ -291,6 +459,8 @@ function showNext(): void {
     return;
   }
   session.markShown(fact.id, userCoords);
+  lastShownFact = fact;
+  journalAdd(fact);
   renderFact(fact);
 }
 
