@@ -1,10 +1,15 @@
-import { rankFacts } from './facts/engine';
+import { dedupeByTitle, rankFacts } from './facts/engine';
 import { Session, UNLOCK_DISTANCE_M } from './facts/session';
 import { formatDistance } from './geo';
+import { etymologyCandidates } from './sources/etymology';
 import { geocodePlace } from './sources/geocode';
+import { overpassCandidates } from './sources/overpass';
 import { sunCandidates } from './sources/sun';
+import { transportCandidates } from './sources/transport';
+import { weatherCandidates } from './sources/weather';
+import { wikidataCandidates } from './sources/wikidata';
 import { wikipediaCandidates, wikipediaLang } from './sources/wikipedia';
-import type { Coords, Fact } from './types';
+import type { Coords, Fact, FactCandidate } from './types';
 
 const app = document.getElementById('app')!;
 
@@ -105,7 +110,9 @@ function renderFact(fact: Fact): void {
       el(
         'p',
         'anchor-line',
-        `→ ${formatDistance(fact.distanceM)} ${fact.direction} of you`,
+        fact.distanceM < 30
+          ? '→ right here'
+          : `→ ${formatDistance(fact.distanceM)} ${fact.direction} of you`,
       ),
     );
   }
@@ -228,30 +235,49 @@ function watchMovement(): void {
   );
 }
 
+async function wikipediaWithFallback(coords: Coords): Promise<FactCandidate[]> {
+  const lang = wikipediaLang();
+  let candidates = await wikipediaCandidates(coords, lang);
+  // Thin local-language coverage? Merge in English as a fallback.
+  if (candidates.length < 3 && lang !== 'en') {
+    const english = await wikipediaCandidates(coords, 'en');
+    const known = new Set(candidates.map((c) => c.title));
+    candidates = candidates.concat(english.filter((c) => !known.has(c.title)));
+  }
+  return candidates;
+}
+
 async function startSession(coords: Coords): Promise<void> {
   userCoords = coords;
   renderStatus('Reading the neighborhood…');
-  try {
-    const lang = wikipediaLang();
-    let candidates = await wikipediaCandidates(coords, lang);
-    // Thin local-language coverage? Merge in English as a fallback.
-    if (candidates.length < 3 && lang !== 'en') {
-      const english = await wikipediaCandidates(coords, 'en');
-      const known = new Set(candidates.map((c) => c.title));
-      candidates = candidates.concat(english.filter((c) => !known.has(c.title)));
-    }
-    candidates = candidates.concat(sunCandidates(coords));
 
-    queue = rankFacts(candidates, coords, session.seenIds);
-    if (queue.length === 0) {
-      renderOutOfFacts('empty');
-      return;
-    }
-    showNext();
-  } catch (err) {
-    console.error(err);
-    renderStart('Could not load facts (network hiccup?). Try again.', true);
+  // All sources in parallel; any one may fail without sinking the session.
+  // Order encodes dedupe priority: richer text first.
+  const results = await Promise.allSettled([
+    wikipediaWithFallback(coords),
+    overpassCandidates(coords),
+    wikidataCandidates(coords),
+    etymologyCandidates(coords),
+    transportCandidates(coords),
+    weatherCandidates(coords),
+  ]);
+  for (const r of results) {
+    if (r.status === 'rejected') console.warn('source failed:', r.reason);
   }
+
+  const fetched = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  if (fetched.length === 0 && results.every((r) => r.status === 'rejected')) {
+    renderStart('Could not load facts (network hiccup?). Try again.', true);
+    return;
+  }
+
+  const candidates = dedupeByTitle(fetched.concat(sunCandidates(coords)));
+  queue = rankFacts(candidates, coords, session.seenIds);
+  if (queue.length === 0) {
+    renderOutOfFacts('empty');
+    return;
+  }
+  showNext();
 }
 
 function showNext(): void {

@@ -27,7 +27,16 @@ Static single-page app, no backend:
 - **Wikipedia GeoSearch + extracts** (CORS, no key) find documented places
   within ~1.2 km and their history. Uses your language's Wikipedia with an
   English fallback when local coverage is thin.
-- **Wikidata / Overpass** are the planned next sources (see `PLAN.md` for the full roadmap).
+- **OpenStreetMap via Overpass** finds the hyper-local layer within ~180 m:
+  historic buildings, memorial plaques (with inscriptions), former names and
+  former uses, construction dates.
+- **Wikidata around-queries** surface listed heritage buildings, fountains and
+  artworks that have no Wikipedia article — with inception year, architect,
+  and namesake.
+- **Street etymology**: the street you're standing on (OSM
+  `name:etymology:wikidata`) plus Wikidata tells you who it's named after.
+- **Live layers**: next departures from the nearest stop (transport.rest) and
+  a rain nowcast for your exact spot (Open-Meteo).
 - **Sun calculation** (client-side, no API) adds time anchors like
   "sunset here in 34 minutes — look west."
 - A small **fact engine** scores candidates by proximity, "surprising past"

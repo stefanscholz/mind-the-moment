@@ -61,6 +61,28 @@ export function proximityScore(meters: number): number {
 }
 
 /**
+ * Drop candidates that describe the same place under the same name —
+ * Wikipedia, OSM and Wikidata overlap heavily. Order encodes priority:
+ * earlier sources (richer text) win.
+ */
+export function dedupeByTitle(candidates: FactCandidate[]): FactCandidate[] {
+  const seen = new Set<string>();
+  const out: FactCandidate[] = [];
+  for (const c of candidates) {
+    const key = c.title
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+/**
  * Score and order candidates for one position. Seen facts sink to the
  * bottom rather than disappearing, so the pool never dead-ends silently.
  */
