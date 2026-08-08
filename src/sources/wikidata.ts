@@ -1,5 +1,6 @@
 import { cacheGet, cacheSet } from '../cache';
 import { gridKey } from '../geo';
+import { isAddressTitle, isBoringDescription } from './filters';
 import type { Coords, FactCandidate } from '../types';
 
 /**
@@ -60,21 +61,32 @@ export function bindingsToCandidates(bindings: WikidataBinding[]): FactCandidate
     const label = b.itemLabel?.value;
     // The label service echoes the QID back when an item has no label.
     if (!label || /^Q\d+$/.test(label)) continue;
+    // "Marktstraße 12" — heritage-register address imports. Never a fact.
+    if (isAddressTitle(label)) continue;
+
+    const description = b.itemDescription?.value;
+    const architect =
+      b.architectLabel?.value && !/^Q\d+$/.test(b.architectLabel.value)
+        ? b.architectLabel.value
+        : undefined;
+    const namedAfter =
+      b.namedAfterLabel?.value && !/^Q\d+$/.test(b.namedAfterLabel.value)
+        ? b.namedAfterLabel.value
+        : undefined;
+
+    // "There is a building here" is not interesting. Keep the item only if
+    // the description says something real, or a person is attached to it.
+    const interestingDescription = !!description && !isBoringDescription(description);
+    if (!interestingDescription && !architect && !namedAfter) continue;
 
     const sentences: string[] = [];
-    if (b.itemDescription?.value) {
-      const d = b.itemDescription.value;
-      sentences.push(d.charAt(0).toUpperCase() + d.slice(1) + '.');
+    if (interestingDescription) {
+      sentences.push(description.charAt(0).toUpperCase() + description.slice(1) + '.');
     }
     const year = b.inception?.value.match(/^(-?\d{1,4})/)?.[1];
     if (year && !year.startsWith('-')) sentences.push(`Dates from ${year}.`);
-    if (b.architectLabel?.value && !/^Q\d+$/.test(b.architectLabel.value)) {
-      sentences.push(`Designed by ${b.architectLabel.value}.`);
-    }
-    if (b.namedAfterLabel?.value && !/^Q\d+$/.test(b.namedAfterLabel.value)) {
-      sentences.push(`Named after ${b.namedAfterLabel.value}.`);
-    }
-    if (sentences.length === 0) continue;
+    if (architect) sentences.push(`Designed by ${architect}.`);
+    if (namedAfter) sentences.push(`Named after ${namedAfter}.`);
 
     out.push({
       id: `wd:${qid}`,

@@ -1,5 +1,6 @@
 import { cacheGet, cacheSet } from '../cache';
 import { gridKey } from '../geo';
+import { isAddressTitle } from './filters';
 import type { Coords, FactCandidate } from '../types';
 
 /**
@@ -57,22 +58,49 @@ export function describeElement(tags: Record<string, string>): {
   text: string;
 } | null {
   const parts: string[] = [];
+  // Weak parts restate that something old exists; strong parts say what
+  // makes it worth looking at. Weak-only facts are the "there is a building
+  // at this address" noise the app must never show.
+  let strong = 0;
+  let weak = 0;
 
   const historic = tags.historic;
-  if (historic && HISTORIC_LABELS[historic]) parts.push(HISTORIC_LABELS[historic]);
-  else if (historic === 'yes') parts.push('a historic site');
-  if (tags.tourism === 'artwork') parts.push('a public artwork');
+  if (historic && HISTORIC_LABELS[historic]) {
+    parts.push(HISTORIC_LABELS[historic]);
+    // "a historic building" alone is filler; memorials, gates, ruins aren't.
+    historic === 'building' ? weak++ : strong++;
+  } else if (historic === 'yes') {
+    parts.push('a historic site');
+    weak++;
+  }
+  if (tags.tourism === 'artwork') {
+    parts.push('a public artwork');
+    strong++;
+  }
 
-  if (tags.old_name) parts.push(`formerly known as “${tags.old_name}”`);
-  if (tags.start_date) parts.push(startDatePhrase(tags.start_date));
-  if (tags.architect) parts.push(`designed by ${tags.architect}`);
-  if (tags.heritage) parts.push('a listed heritage site');
+  if (tags.old_name) {
+    parts.push(`formerly known as “${tags.old_name}”`);
+    strong++;
+  }
+  if (tags.start_date) {
+    parts.push(startDatePhrase(tags.start_date));
+    weak++;
+  }
+  if (tags.architect) {
+    parts.push(`designed by ${tags.architect}`);
+    strong++;
+  }
+  if (tags.heritage) {
+    parts.push('a listed heritage site');
+    weak++;
+  }
 
   // disused:shop=bakery, abandoned:amenity=cinema, was:*=... → former uses.
   for (const [key, value] of Object.entries(tags)) {
     const m = key.match(/^(?:disused|abandoned|was):(?:.+)$/);
     if (m && /^[a-z_]+$/.test(value)) {
       parts.push(`no longer in use as a ${value.replace(/_/g, ' ')}`);
+      strong++;
       break;
     }
   }
@@ -83,16 +111,20 @@ export function describeElement(tags: Record<string, string>): {
         ? tags.inscription.slice(0, 160).trimEnd() + '…'
         : tags.inscription;
     parts.push(`its inscription reads: “${quote}”`);
+    strong++;
   }
   if (tags.description && tags.description.length < 200) {
     parts.push(tags.description);
+    strong++;
   }
 
   const title = tags.name ?? tags.old_name;
-  // A bare name with nothing to say about it is not a fact.
   if (parts.length === 0) return null;
   // Nameless elements need enough substance to stand alone.
-  if (!title && parts.length < 2 && !tags.inscription) return null;
+  if (!title && strong === 0) return null;
+  // Named elements: something real, or a proper name plus at least two
+  // period signals. An address as a name counts for nothing.
+  if (title && strong === 0 && (weak < 2 || isAddressTitle(title))) return null;
 
   const first = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
   const body = [first, ...parts.slice(1)].join(', ') + '.';
