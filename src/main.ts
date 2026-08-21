@@ -3,6 +3,12 @@ import { journalAdd, journalEntries } from './facts/journal';
 import { Session, UNLOCK_DISTANCE_M } from './facts/session';
 import { bearingDeg, compassName, distanceM, formatDistance } from './geo';
 import { radarLayout } from './radar/layout';
+import {
+  loadSettings,
+  RANGE_OPTIONS_M,
+  saveSettings,
+  type Settings,
+} from './settings';
 import { etymologyCandidates } from './sources/etymology';
 import { geocodePlace } from './sources/geocode';
 import { overpassCandidates } from './sources/overpass';
@@ -21,6 +27,7 @@ let placeLabel = '';
 let queue: Fact[] = [];
 let watchId: number | null = null;
 let lastShownFact: Fact | null = null;
+let settings: Settings = loadSettings();
 
 // ---------- rendering helpers ----------
 
@@ -36,9 +43,14 @@ function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 function masthead(): HTMLElement {
+  const bar = el('div', 'masthead-bar');
   const h = el('p', 'wordmark');
   h.innerHTML = 'Mind <span class="dot">·</span> the <span class="dot">·</span> Moment';
-  return h;
+  bar.append(h);
+  const gear = el('button', 'settings-link', 'Settings');
+  gear.addEventListener('click', () => renderSettings());
+  bar.append(gear);
+  return bar;
 }
 
 function screen(...children: (HTMLElement | null)[]): void {
@@ -314,6 +326,73 @@ function renderRadar(selectedId?: string): void {
   screen(box);
 }
 
+function renderSettings(): void {
+  const box = el('div', 'screen settings-screen');
+  box.append(el('h1', undefined, 'Settings'));
+
+  // --- Range ---
+  box.append(el('h2', 'settings-heading', 'Search range'));
+  const pills = el('div', 'pill-row');
+  for (const range of RANGE_OPTIONS_M) {
+    const pill = el(
+      'button',
+      settings.rangeM === range ? 'pill active' : 'pill',
+      formatDistance(range),
+    );
+    pill.setAttribute('aria-pressed', String(settings.rangeM === range));
+    pill.addEventListener('click', () => {
+      settings.rangeM = range;
+      saveSettings(settings);
+      renderSettings();
+    });
+    pills.append(pill);
+  }
+  box.append(pills);
+  box.append(
+    el(
+      'p',
+      'hint',
+      'Applies to places. Live facts (departures, weather, sunset) are always about right here.',
+    ),
+  );
+
+  // --- Sources ---
+  box.append(el('h2', 'settings-heading', 'Fact sources'));
+  const sourceLabels: [keyof Settings['sources'], string][] = [
+    ['wikipedia', 'Wikipedia'],
+    ['wikidata', 'Wikidata'],
+    ['osm', 'OpenStreetMap buildings'],
+    ['etymology', 'Street name origins'],
+    ['transport', 'Live departures'],
+    ['weather', 'Rain nowcast'],
+  ];
+  const list = el('div', 'settings-list');
+  for (const [key, label] of sourceLabels) {
+    const row = el('label', 'settings-row');
+    const input = el('input') as HTMLInputElement;
+    input.type = 'checkbox';
+    input.checked = settings.sources[key];
+    input.addEventListener('change', () => {
+      settings.sources[key] = input.checked;
+      saveSettings(settings);
+    });
+    row.append(input, el('span', undefined, label));
+    list.append(row);
+  }
+  box.append(list);
+
+  const actions = el('div', 'actions');
+  const done = el('button', undefined, 'Done');
+  done.addEventListener('click', () => {
+    // Settings affect which facts exist — restart the pool at this spot.
+    if (userCoords) startSession(userCoords);
+    else renderStart();
+  });
+  actions.append(done);
+  box.append(actions);
+  screen(box);
+}
+
 /** Return from the radar to wherever the session actually stands. */
 function resumeSession(): void {
   if (lastShownFact && !session.capReached) renderFact(lastShownFact);
@@ -403,12 +482,15 @@ function watchMovement(): void {
   );
 }
 
-async function wikipediaWithFallback(coords: Coords): Promise<FactCandidate[]> {
+async function wikipediaWithFallback(
+  coords: Coords,
+  radiusM: number,
+): Promise<FactCandidate[]> {
   const lang = wikipediaLang();
-  let candidates = await wikipediaCandidates(coords, lang);
+  let candidates = await wikipediaCandidates(coords, lang, radiusM);
   // Thin local-language coverage? Merge in English as a fallback.
   if (candidates.length < 3 && lang !== 'en') {
-    const english = await wikipediaCandidates(coords, 'en');
+    const english = await wikipediaCandidates(coords, 'en', radiusM);
     const known = new Set(candidates.map((c) => c.title));
     candidates = candidates.concat(english.filter((c) => !known.has(c.title)));
   }
@@ -419,28 +501,39 @@ async function startSession(coords: Coords): Promise<void> {
   userCoords = coords;
   renderStatus('Reading the neighborhood…');
 
-  // All sources in parallel; any one may fail without sinking the session.
-  // Order encodes dedupe priority: richer text first.
-  const results = await Promise.allSettled([
-    wikipediaWithFallback(coords),
-    overpassCandidates(coords),
-    wikidataCandidates(coords),
-    etymologyCandidates(coords),
-    transportCandidates(coords),
-    weatherCandidates(coords),
-  ]);
+  // Enabled sources in parallel; any one may fail without sinking the
+  // session. Order encodes dedupe priority: richer text first.
+  const { rangeM, sources } = settings;
+  const tasks: Promise<FactCandidate[]>[] = [];
+  if (sources.wikipedia) tasks.push(wikipediaWithFallback(coords, rangeM));
+  if (sources.osm) tasks.push(overpassCandidates(coords, rangeM));
+  if (sources.wikidata) tasks.push(wikidataCandidates(coords, rangeM));
+  if (sources.etymology) tasks.push(etymologyCandidates(coords));
+  if (sources.transport) tasks.push(transportCandidates(coords));
+  if (sources.weather) tasks.push(weatherCandidates(coords));
+
+  const results = await Promise.allSettled(tasks);
   for (const r of results) {
     if (r.status === 'rejected') console.warn('source failed:', r.reason);
   }
 
   const fetched = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
-  if (fetched.length === 0 && results.every((r) => r.status === 'rejected')) {
+  if (
+    fetched.length === 0 &&
+    results.length > 0 &&
+    results.every((r) => r.status === 'rejected')
+  ) {
     renderStart('Could not load facts (network hiccup?). Try again.', true);
     return;
   }
 
   const candidates = dedupeByTitle(fetched.concat(sunCandidates(coords)));
-  queue = rankFacts(candidates, coords, session.seenIds);
+  const ranked = rankFacts(candidates, coords, session.seenIds);
+  // The range is a promise to the user: place facts beyond it never show,
+  // even from cached or secondary-coordinate results.
+  queue = ranked.filter(
+    (f) => f.kind !== 'place' || f.distanceM === undefined || f.distanceM <= rangeM,
+  );
   if (queue.length === 0) {
     renderOutOfFacts('empty');
     return;

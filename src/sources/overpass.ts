@@ -10,7 +10,6 @@ import type { Coords, FactCandidate } from '../types';
  * former uses, construction dates, inscriptions.
  */
 
-const RADIUS_M = 180;
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const ENDPOINT = 'https://overpass-api.de/api/interpreter';
 
@@ -151,28 +150,31 @@ export function elementsToCandidates(elements: OverpassElement[]): FactCandidate
   return out;
 }
 
-function buildQuery(coords: Coords): string {
+function buildQuery(coords: Coords, radiusM: number): string {
   const c = `${coords.lat},${coords.lon}`;
   return `[out:json][timeout:15];
 (
-  nwr(around:${RADIUS_M},${c})["historic"];
-  nwr(around:${RADIUS_M},${c})["tourism"="artwork"];
-  nwr(around:${RADIUS_M},${c})["old_name"];
-  nwr(around:${RADIUS_M},${c})["start_date"]["name"];
-  nwr(around:${RADIUS_M},${c})["heritage"]["name"];
+  nwr(around:${radiusM},${c})["historic"];
+  nwr(around:${radiusM},${c})["tourism"="artwork"];
+  nwr(around:${radiusM},${c})["old_name"];
+  nwr(around:${radiusM},${c})["start_date"]["name"];
+  nwr(around:${radiusM},${c})["heritage"]["name"];
 );
 out center tags 60;`;
 }
 
-export async function overpassCandidates(coords: Coords): Promise<FactCandidate[]> {
-  const key = `osm:${gridKey(coords)}`;
+export async function overpassCandidates(
+  coords: Coords,
+  radiusM: number,
+): Promise<FactCandidate[]> {
+  const key = `osm:${radiusM}:${gridKey(coords)}`;
   const cached = cacheGet<FactCandidate[]>(key, CACHE_MAX_AGE_MS);
   if (cached) return cached;
 
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'data=' + encodeURIComponent(buildQuery(coords)),
+    body: 'data=' + encodeURIComponent(buildQuery(coords, radiusM)),
   });
   if (!res.ok) throw new Error(`Overpass failed: ${res.status}`);
   const data = (await res.json()) as { elements?: OverpassElement[] };

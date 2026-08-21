@@ -2,7 +2,6 @@ import { cacheGet, cacheSet } from '../cache';
 import { gridKey } from '../geo';
 import type { Coords, FactCandidate } from '../types';
 
-const SEARCH_RADIUS_M = 1200;
 const MAX_PAGES = 25;
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -29,12 +28,17 @@ function apiUrl(lang: string, params: Record<string, string>): string {
   return `https://${lang}.wikipedia.org/w/api.php?${search}`;
 }
 
-async function geoSearch(lang: string, coords: Coords): Promise<GeoSearchResult[]> {
+async function geoSearch(
+  lang: string,
+  coords: Coords,
+  radiusM: number,
+): Promise<GeoSearchResult[]> {
   const url = apiUrl(lang, {
     action: 'query',
     list: 'geosearch',
     gscoord: `${coords.lat}|${coords.lon}`,
-    gsradius: String(SEARCH_RADIUS_M),
+    // The API accepts 10..10000 meters.
+    gsradius: String(Math.min(Math.max(radiusM, 10), 10000)),
     gslimit: String(MAX_PAGES),
   });
   const res = await fetch(url);
@@ -79,12 +83,13 @@ export function trimExtract(text: string, maxChars = 420): string {
 export async function wikipediaCandidates(
   coords: Coords,
   lang: string,
+  radiusM: number,
 ): Promise<FactCandidate[]> {
-  const key = `wp:${lang}:${gridKey(coords)}`;
+  const key = `wp:${lang}:${radiusM}:${gridKey(coords)}`;
   const cached = cacheGet<FactCandidate[]>(key, CACHE_MAX_AGE_MS);
   if (cached) return cached;
 
-  const hits = await geoSearch(lang, coords);
+  const hits = await geoSearch(lang, coords, radiusM);
   const byId = new Map(hits.map((h) => [h.pageid, h]));
   const pages = await fetchExtracts(lang, hits.map((h) => h.pageid));
 

@@ -10,7 +10,6 @@ import type { Coords, FactCandidate } from '../types';
  * even when no article exists.
  */
 
-const RADIUS_KM = 0.25;
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const ENDPOINT = 'https://query.wikidata.org/sparql';
 
@@ -28,12 +27,12 @@ export interface WikidataBinding {
   namedAfterLabel?: SparqlValue;
 }
 
-function buildQuery(coords: Coords): string {
+function buildQuery(coords: Coords, radiusKm: number): string {
   return `SELECT ?item ?itemLabel ?itemDescription ?coord ?inception ?architectLabel ?namedAfterLabel WHERE {
   SERVICE wikibase:around {
     ?item wdt:P625 ?coord .
     bd:serviceParam wikibase:center "Point(${coords.lon} ${coords.lat})"^^geo:wktLiteral .
-    bd:serviceParam wikibase:radius "${RADIUS_KM}" .
+    bd:serviceParam wikibase:radius "${radiusKm}" .
   }
   OPTIONAL { ?item wdt:P571 ?inception . }
   OPTIONAL { ?item wdt:P84 ?architect . }
@@ -101,15 +100,18 @@ export function bindingsToCandidates(bindings: WikidataBinding[]): FactCandidate
   return out;
 }
 
-export async function wikidataCandidates(coords: Coords): Promise<FactCandidate[]> {
-  const key = `wd:${gridKey(coords)}`;
+export async function wikidataCandidates(
+  coords: Coords,
+  radiusM: number,
+): Promise<FactCandidate[]> {
+  const key = `wd:${radiusM}:${gridKey(coords)}`;
   const cached = cacheGet<FactCandidate[]>(key, CACHE_MAX_AGE_MS);
   if (cached) return cached;
 
   const url =
     ENDPOINT +
     '?' +
-    new URLSearchParams({ query: buildQuery(coords), format: 'json' });
+    new URLSearchParams({ query: buildQuery(coords, radiusM / 1000), format: 'json' });
   const res = await fetch(url, { headers: { Accept: 'application/sparql-results+json' } });
   if (!res.ok) throw new Error(`Wikidata failed: ${res.status}`);
   const data = await res.json();
